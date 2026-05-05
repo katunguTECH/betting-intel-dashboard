@@ -1,96 +1,143 @@
-# app.py - Personal Betting Intelligence Dashboard (Direct DB connection)
+# app.py - Professional Betting Intelligence Dashboard
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+from db_helper import get_connection
 import os
-import psycopg2
-import urllib.parse
 
-st.set_page_config(page_title="Betting Intel", layout="wide")
+st.set_page_config(page_title="Betting Intel", layout="wide", initial_sidebar_state="expanded")
 
-# --- Direct Database Connection using DATABASE_URL ---
-# --- Debug ---
-st.write("--- Debug Info ---")
-database_url = os.getenv("DATABASE_URL")
-st.write("DATABASE_URL present:", bool(database_url))
-st.write("First 20 chars of URL:", database_url[:20] if database_url else "N/A")
-st.write("All env keys:", [k for k in os.environ.keys() if not k.startswith("RAILWAY")])  # shorter list
-st.write("--- End Debug ---")
+# ---------- Custom CSS for Professional SaaS Look ----------
+st.markdown("""
+<style>
+    /* Main background and fonts */
+    .main {
+        background-color: #f8fafc;
+        font-family: 'Inter', sans-serif;
+    }
+    /* Header styling */
+    h1 {
+        color: #1e293b;
+        font-weight: 700;
+        font-size: 2.2rem;
+    }
+    /* Metric cards */
+    .metric-card {
+        background: white;
+        border-radius: 1rem;
+        padding: 1.2rem;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        border-left: 4px solid #3b82f6;
+        transition: transform 0.2s;
+    }
+    .metric-card:hover {
+        transform: translateY(-2px);
+    }
+    .metric-value {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #0f172a;
+        margin-bottom: 0.25rem;
+    }
+    .metric-label {
+        font-size: 0.85rem;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    /* Dataframe styling */
+    .dataframe {
+        font-family: 'Inter', monospace;
+        font-size: 0.9rem;
+    }
+    /* Badge for value bets */
+    .value-badge {
+        background-color: #10b981;
+        color: white;
+        padding: 0.2rem 0.6rem;
+        border-radius: 2rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+        display: inline-block;
+    }
+    /* Confidence bar */
+    .confidence-bar {
+        background-color: #e2e8f0;
+        border-radius: 1rem;
+        height: 0.5rem;
+        width: 100%;
+        overflow: hidden;
+    }
+    .confidence-fill {
+        background-color: #3b82f6;
+        height: 100%;
+        border-radius: 1rem;
+    }
+    /* Footer */
+    .footer {
+        margin-top: 3rem;
+        padding: 1rem;
+        text-align: center;
+        font-size: 0.75rem;
+        color: #94a3b8;
+        border-top: 1px solid #e2e8f0;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-if not database_url:
-    st.error("DATABASE_URL environment variable is missing!")
-    st.stop()
-
-# Parse the URL
-try:
-    result = urllib.parse.urlparse(database_url)
-    conn = psycopg2.connect(
-        dbname=result.path[1:],
-        user=result.username,
-        password=result.password,
-        host=result.hostname,
-        port=result.port
-    )
-    st.success("✅ Successfully connected to Railway PostgreSQL!")
-    
-    # Quick test query
-    with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM teams")
-        team_count = cur.fetchone()[0]
-        st.write(f"Teams in database: {team_count}")
-        
-        cur.execute("SELECT COUNT(*) FROM fixtures WHERE date > NOW()")
-        upcoming = cur.fetchone()[0]
-        st.write(f"Upcoming fixtures: {upcoming}")
-    conn.close()
-    
-except Exception as e:
-    st.error(f"Database connection failed: {e}")
-    st.stop()
-
-st.write("--- End Debug ---")
-st.title("⚽ Personal Betting Intelligence Dashboard")
-st.markdown("_For personal use only_")
-
-# ---------- Helper Functions (using direct connection) ----------
-def load_upcoming_fixtures(days_ahead=14):
-    """Load upcoming fixtures with predictions and odds."""
-    try:
-        result = urllib.parse.urlparse(database_url)
-        conn = psycopg2.connect(
-            dbname=result.path[1:],
-            user=result.username,
-            password=result.password,
-            host=result.hostname,
-            port=result.port
-        )
+# ---------- Helper Functions ----------
+@st.cache_data(ttl=300)
+def load_leagues():
+    """Get distinct leagues from fixtures table."""
+    with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT 
-                    f.date,
-                    h.name AS home,
-                    a.name AS away,
-                    p.predicted_winner,
-                    p.win_probability,
-                    p.advice,
-                    o.bookmaker,
-                    o.home_odds,
-                    o.draw_odds,
-                    o.away_odds
-                FROM fixtures f
-                JOIN teams h ON f.home_team_id = h.id
-                JOIN teams a ON f.away_team_id = a.id
-                LEFT JOIN predictions p ON f.id = p.fixture_id
-                LEFT JOIN odds o ON f.id = o.fixture_id
-                WHERE f.date > NOW()
-                  AND f.date < NOW() + INTERVAL '%s days'
-                ORDER BY f.date ASC
-            """, (days_ahead,))
+                SELECT DISTINCT league_id, season
+                FROM fixtures
+                ORDER BY league_id, season DESC
+            """)
             rows = cur.fetchall()
-        conn.close()
-        return rows
+            return [{"id": row["league_id"], "season": row["season"]} for row in rows]
+
+@st.cache_data(ttl=60)
+def load_upcoming_fixtures(league_id=None, days_ahead=14):
+    """Load upcoming fixtures with predictions and odds."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                query = """
+                    SELECT 
+                        f.id,
+                        f.date,
+                        h.name AS home,
+                        a.name AS away,
+                        p.predicted_winner,
+                        p.win_probability,
+                        p.advice,
+                        o.bookmaker,
+                        o.home_odds,
+                        o.draw_odds,
+                        o.away_odds
+                    FROM fixtures f
+                    JOIN teams h ON f.home_team_id = h.id
+                    JOIN teams a ON f.away_team_id = a.id
+                    LEFT JOIN predictions p ON f.id = p.fixture_id
+                    LEFT JOIN odds o ON f.id = o.fixture_id
+                    WHERE f.date > NOW()
+                      AND f.date < NOW() + INTERVAL '%s days'
+                """
+                params = [days_ahead]
+                if league_id:
+                    query += " AND f.league_id = %s"
+                    params.append(league_id)
+                query += " ORDER BY f.date ASC"
+                cur.execute(query, params)
+                rows = cur.fetchall()
+                return rows
     except Exception as e:
-        st.error(f"Query error: {e}")
+        st.error(f"Error loading fixtures: {e}")
         return []
 
 def calculate_ev(probability, odds):
@@ -98,66 +145,102 @@ def calculate_ev(probability, odds):
         return None
     return (probability * odds) - (1 - probability)
 
+def format_confidence(prob):
+    if prob is None:
+        return "N/A"
+    pct = prob * 100
+    color = "#10b981" if pct >= 70 else "#f59e0b" if pct >= 50 else "#ef4444"
+    return f'<div class="confidence-bar"><div class="confidence-fill" style="width: {pct}%; background-color: {color};"></div></div><span style="font-size:0.8rem;">{pct:.0f}%</span>'
+
 # ---------- Sidebar ----------
-st.sidebar.header("Filters")
-days_ahead = st.sidebar.slider("Days ahead", 1, 30, 7)
-show_value_only = st.sidebar.checkbox("Show only value bets", False)
+st.sidebar.image("https://img.icons8.com/fluency/96/football2.png", width=60)
+st.sidebar.title("Controls")
+
+leagues = load_leagues()
+league_options = {f"{row['id']}_{row['season']}": f"League {row['id']} ({row['season']})" for row in leagues}
+selected_league_key = st.sidebar.selectbox("Select League", options=list(league_options.keys()), format_func=lambda x: league_options[x])
+selected_league_id = int(selected_league_key.split("_")[0])
+days_ahead = st.sidebar.slider("Days ahead", 1, 60, 7)
+show_value_only = st.sidebar.checkbox("🔍 Show only value bets", value=False)
+st.sidebar.markdown("---")
+st.sidebar.info("Data refreshes every 60 seconds. Predictions from API‑Football.")
 
 # ---------- Load Data ----------
-with st.spinner("Loading fixtures..."):
-    fixtures = load_upcoming_fixtures(days_ahead)
+with st.spinner("Loading matches..."):
+    fixtures = load_upcoming_fixtures(league_id=selected_league_id, days_ahead=days_ahead)
 
 if not fixtures:
-    st.warning("No upcoming fixtures with predictions found. Please run `fetch_missing_predictions.py` first to populate predictions.")
-    st.info("""
-    **How to get predictions:**
-    1. Ensure your PostgreSQL is running.
-    2. Run: `python fetch_missing_predictions.py`
-    3. Then refresh this page.
-    """)
+    st.warning("No upcoming fixtures found for this league. Try increasing days ahead or check data import.")
     st.stop()
 
 # ---------- Process Data ----------
 df = pd.DataFrame(fixtures)
 df['date'] = pd.to_datetime(df['date'])
-df['win_probability'] = df['win_probability'] * 100  # as percentage
-
-df['value_bet'] = df.apply(
-    lambda row: calculate_ev(row['win_probability']/100, row['home_odds']) > 0.05 
-    if pd.notna(row['win_probability']) and pd.notna(row['home_odds']) else False, axis=1
-)
+df['win_probability'] = df['win_probability'] * 100
+df['ev'] = df.apply(lambda row: calculate_ev(row['win_probability']/100, row['home_odds']), axis=1)
+df['value_bet'] = df['ev'] > 0.05 if df['ev'].notna().any() else False
 
 if show_value_only:
     df = df[df['value_bet'] == True]
-
-if df.empty:
-    st.info("No fixtures match the selected filters.")
-    st.stop()
+    if df.empty:
+        st.info("No value bets in this league for the selected period.")
+        st.stop()
 
 # ---------- Metrics ----------
-col1, col2, col3 = st.columns(3)
-col1.metric("Upcoming Fixtures", len(df))
-col2.metric("With Predictions", df['predicted_winner'].notna().sum())
-col3.metric("Value Bets Detected", df['value_bet'].sum())
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    st.markdown(f'<div class="metric-card"><div class="metric-value">{len(df)}</div><div class="metric-label">Upcoming Matches</div></div>', unsafe_allow_html=True)
+with col2:
+    pred_count = df['predicted_winner'].notna().sum()
+    st.markdown(f'<div class="metric-card"><div class="metric-value">{pred_count}</div><div class="metric-label">With Predictions</div></div>', unsafe_allow_html=True)
+with col3:
+    val_count = df[df['value_bet']].shape[0]
+    st.markdown(f'<div class="metric-card"><div class="metric-value">{val_count}</div><div class="metric-label">Value Bets</div></div>', unsafe_allow_html=True)
+with col4:
+    avg_conf = df['win_probability'].mean()
+    st.markdown(f'<div class="metric-card"><div class="metric-value">{avg_conf:.0f}%</div><div class="metric-label">Avg Confidence</div></div>', unsafe_allow_html=True)
 
-# ---------- Table ----------
-st.subheader("📋 Upcoming Matches")
-display_df = df[['date', 'home', 'away', 'predicted_winner', 'win_probability', 'advice', 'value_bet']].copy()
-display_df.columns = ['Date', 'Home', 'Away', 'Prediction', 'Confidence (%)', 'Advice', 'Value Bet?']
-st.dataframe(display_df, use_container_width=True)
+# ---------- Tabs ----------
+tab1, tab2, tab3 = st.tabs(["📋 Upcoming Matches", "🎯 Value Bets", "📊 Statistics"])
 
-# ---------- Value Bets Highlight ----------
-value_bets = df[df['value_bet'] == True]
-if not value_bets.empty:
-    st.subheader("🎯 Value Bet Opportunities")
-    for _, row in value_bets.iterrows():
-        st.success(f"**{row['home']} vs {row['away']}** – "
-                   f"Predicted: {row['predicted_winner']} ({row['win_probability']:.0f}%) | "
-                   f"Odds: {row['home_odds']} | Positive EV")
+with tab1:
+    # Prepare display table
+    display_df = df[['date', 'home', 'away', 'predicted_winner', 'win_probability', 'advice', 'value_bet']].copy()
+    display_df['date'] = display_df['date'].dt.strftime('%Y-%m-%d %H:%M')
+    display_df['win_probability'] = display_df['win_probability'].apply(lambda x: f"{x:.0f}%" if pd.notna(x) else "N/A")
+    display_df['value_bet'] = display_df['value_bet'].apply(lambda x: '<span class="value-badge">VALUE</span>' if x else "")
+    display_df.columns = ['Date', 'Home', 'Away', 'Prediction', 'Confidence', 'Advice', '']
+    st.markdown(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
 
-# ---------- Chart ----------
-if df['win_probability'].notna().sum() > 0:
-    st.subheader("📊 Prediction Confidence Distribution")
-    fig = px.histogram(df.dropna(subset=['win_probability']), x='win_probability', nbins=20,
-                       title="Confidence of Predictions (%)")
-    st.plotly_chart(fig, use_container_width=True)
+with tab2:
+    val_df = df[df['value_bet']]
+    if val_df.empty:
+        st.info("No value bets found for this selection.")
+    else:
+        val_display = val_df[['date', 'home', 'away', 'predicted_winner', 'win_probability', 'home_odds', 'ev']].copy()
+        val_display['date'] = val_display['date'].dt.strftime('%Y-%m-%d %H:%M')
+        val_display['win_probability'] = val_display['win_probability'].apply(lambda x: f"{x:.0f}%")
+        val_display['ev'] = val_display['ev'].apply(lambda x: f"+{x*100:.1f}%" if x else "N/A")
+        val_display.columns = ['Date', 'Home', 'Away', 'Prediction', 'Confidence', 'Odds (Home)', 'Expected Value']
+        st.dataframe(val_display, use_container_width=True)
+
+with tab3:
+    # Confidence histogram
+    fig1 = px.histogram(df[df['win_probability'].notna()], x='win_probability', nbins=20,
+                        title="Prediction Confidence Distribution",
+                        labels={'win_probability': 'Confidence (%)'},
+                        color_discrete_sequence=['#3b82f6'])
+    fig1.update_layout(bargap=0.1, plot_bgcolor='white', title_font_size=16)
+    st.plotly_chart(fig1, use_container_width=True)
+
+    # Value bet chart (if any)
+    if val_count > 0:
+        fig2 = px.bar(val_df, x='home', y='ev', title="Expected Value per Match",
+                      labels={'ev': 'Expected Value (%)', 'home': 'Home Team'},
+                      color='ev', color_continuous_scale='viridis')
+        st.plotly_chart(fig2, use_container_width=True)
+    else:
+        st.info("No value bets to display in chart.")
+
+# ---------- Footer ----------
+st.markdown(f'<div class="footer">Data last refreshed: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} UTC | Powered by API‑Football &amp; Railway</div>', unsafe_allow_html=True)
