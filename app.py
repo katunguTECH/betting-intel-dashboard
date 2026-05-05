@@ -9,9 +9,12 @@ import urllib.parse
 st.set_page_config(page_title="Betting Intel", layout="wide")
 
 # --- Direct Database Connection using DATABASE_URL ---
+# --- Debug ---
 st.write("--- Debug Info ---")
-st.write("DATABASE_URL present:", bool(os.getenv("DATABASE_URL")))
-st.write("All env keys:", list(os.environ.keys()))
+database_url = os.getenv("DATABASE_URL")
+st.write("DATABASE_URL present:", bool(database_url))
+st.write("First 20 chars of URL:", database_url[:20] if database_url else "N/A")
+st.write("All env keys:", [k for k in os.environ.keys() if not k.startswith("RAILWAY")])  # shorter list
 st.write("--- End Debug ---")
 
 if not database_url:
