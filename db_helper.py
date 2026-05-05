@@ -8,10 +8,10 @@ import urllib.parse
 load_dotenv()
 
 def get_connection():
-    """Return a database connection using either DATABASE_URL or individual params."""
+    """Return a database connection using DATABASE_URL (Railway) or individual params (local)."""
     database_url = os.getenv("DATABASE_URL")
     if database_url:
-        # For Railway: parse the URL
+        # Parse Railway's PostgreSQL URL
         result = urllib.parse.urlparse(database_url)
         return psycopg2.connect(
             dbname=result.path[1:],
@@ -22,7 +22,7 @@ def get_connection():
             cursor_factory=RealDictCursor
         )
     else:
-        # Local development
+        # Local development (fallback)
         return psycopg2.connect(
             dbname=os.getenv("DB_NAME"),
             user=os.getenv("DB_USER"),
