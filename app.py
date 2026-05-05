@@ -1,52 +1,92 @@
-# app.py - Personal Betting Intelligence Dashboard
+# app.py - Personal Betting Intelligence Dashboard (Direct DB connection)
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from datetime import datetime, timedelta
-from db_helper import get_connection
 import os
+import psycopg2
+import urllib.parse
 
 st.set_page_config(page_title="Betting Intel", layout="wide")
 
-# --- Debug: Show DATABASE_URL status ---
+# --- Direct Database Connection using DATABASE_URL ---
 st.write("--- Debug Info ---")
-st.write("DATABASE_URL present:", bool(os.getenv("DATABASE_URL")))
-st.write("--- End Debug ---")
+database_url = os.getenv("DATABASE_URL")
+st.write("DATABASE_URL present:", bool(database_url))
 
+if not database_url:
+    st.error("DATABASE_URL environment variable is missing!")
+    st.stop()
+
+# Parse the URL
+try:
+    result = urllib.parse.urlparse(database_url)
+    conn = psycopg2.connect(
+        dbname=result.path[1:],
+        user=result.username,
+        password=result.password,
+        host=result.hostname,
+        port=result.port
+    )
+    st.success("✅ Successfully connected to Railway PostgreSQL!")
+    
+    # Quick test query
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM teams")
+        team_count = cur.fetchone()[0]
+        st.write(f"Teams in database: {team_count}")
+        
+        cur.execute("SELECT COUNT(*) FROM fixtures WHERE date > NOW()")
+        upcoming = cur.fetchone()[0]
+        st.write(f"Upcoming fixtures: {upcoming}")
+    conn.close()
+    
+except Exception as e:
+    st.error(f"Database connection failed: {e}")
+    st.stop()
+
+st.write("--- End Debug ---")
 st.title("⚽ Personal Betting Intelligence Dashboard")
 st.markdown("_For personal use only_")
 
-# ---------- Helper Functions ----------
+# ---------- Helper Functions (using direct connection) ----------
 def load_upcoming_fixtures(days_ahead=14):
     """Load upcoming fixtures with predictions and odds."""
     try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT 
-                        f.date,
-                        h.name AS home,
-                        a.name AS away,
-                        p.predicted_winner,
-                        p.win_probability,
-                        p.advice,
-                        o.bookmaker,
-                        o.home_odds,
-                        o.draw_odds,
-                        o.away_odds
-                    FROM fixtures f
-                    JOIN teams h ON f.home_team_id = h.id
-                    JOIN teams a ON f.away_team_id = a.id
-                    LEFT JOIN predictions p ON f.id = p.fixture_id
-                    LEFT JOIN odds o ON f.id = o.fixture_id
-                    WHERE f.date > NOW()
-                      AND f.date < NOW() + INTERVAL '%s days'
-                    ORDER BY f.date ASC
-                """, (days_ahead,))
-                rows = cur.fetchall()
-                return rows
+        result = urllib.parse.urlparse(database_url)
+        conn = psycopg2.connect(
+            dbname=result.path[1:],
+            user=result.username,
+            password=result.password,
+            host=result.hostname,
+            port=result.port
+        )
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT 
+                    f.date,
+                    h.name AS home,
+                    a.name AS away,
+                    p.predicted_winner,
+                    p.win_probability,
+                    p.advice,
+                    o.bookmaker,
+                    o.home_odds,
+                    o.draw_odds,
+                    o.away_odds
+                FROM fixtures f
+                JOIN teams h ON f.home_team_id = h.id
+                JOIN teams a ON f.away_team_id = a.id
+                LEFT JOIN predictions p ON f.id = p.fixture_id
+                LEFT JOIN odds o ON f.id = o.fixture_id
+                WHERE f.date > NOW()
+                  AND f.date < NOW() + INTERVAL '%s days'
+                ORDER BY f.date ASC
+            """, (days_ahead,))
+            rows = cur.fetchall()
+        conn.close()
+        return rows
     except Exception as e:
-        st.error(f"Database connection error: {e}")
+        st.error(f"Query error: {e}")
         return []
 
 def calculate_ev(probability, odds):
@@ -78,7 +118,6 @@ df = pd.DataFrame(fixtures)
 df['date'] = pd.to_datetime(df['date'])
 df['win_probability'] = df['win_probability'] * 100  # as percentage
 
-# Calculate expected value for home win (example)
 df['value_bet'] = df.apply(
     lambda row: calculate_ev(row['win_probability']/100, row['home_odds']) > 0.05 
     if pd.notna(row['win_probability']) and pd.notna(row['home_odds']) else False, axis=1
