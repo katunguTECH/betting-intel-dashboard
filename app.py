@@ -10,8 +10,9 @@ st.set_page_config(page_title="Betting Intel", layout="wide")
 
 # --- Direct Database Connection using DATABASE_URL ---
 st.write("--- Debug Info ---")
-database_url = os.getenv("DATABASE_URL")
-st.write("DATABASE_URL present:", bool(database_url))
+st.write("DATABASE_URL present:", bool(os.getenv("DATABASE_URL")))
+st.write("All env keys:", list(os.environ.keys()))
+st.write("--- End Debug ---")
 
 if not database_url:
     st.error("DATABASE_URL environment variable is missing!")
