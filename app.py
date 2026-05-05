@@ -4,8 +4,15 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
 from db_helper import get_connection
+import os
 
 st.set_page_config(page_title="Betting Intel", layout="wide")
+
+# --- Debug: Show DATABASE_URL status ---
+st.write("--- Debug Info ---")
+st.write("DATABASE_URL present:", bool(os.getenv("DATABASE_URL")))
+st.write("--- End Debug ---")
+
 st.title("⚽ Personal Betting Intelligence Dashboard")
 st.markdown("_For personal use only_")
 
