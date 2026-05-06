@@ -1,247 +1,170 @@
+# app.py - Professional Betting Dashboard (no external scraping)
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
-import asyncio
-import requests
-import json
-from bs4 import BeautifulSoup
-import re
+from datetime import datetime
+from db_helper import get_connection
+from collector import FootballDataCollector
+from model import FootballPredictor
+import os
 
-st.set_page_config(
-    page_title="Football Predictor Pro",
-    page_icon="⚽",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Football Predictor Pro", layout="wide", initial_sidebar_state="expanded")
 
-# Custom CSS for professional look
+# Custom CSS
 st.markdown("""
 <style>
-    /* Main background */
-    .stApp {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    }
-    
-    /* Card styling */
-    .match-card {
-        background: rgba(255, 255, 255, 0.95);
-        border-radius: 15px;
-        padding: 20px;
-        margin-bottom: 20px;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.1);
-        transition: transform 0.3s ease;
-    }
-    
-    .match-card:hover {
-        transform: translateY(-5px);
-    }
-    
-    /* Prediction badge */
-    .prediction-badge {
-        display: inline-block;
-        padding: 8px 16px;
-        border-radius: 25px;
-        font-weight: bold;
-        text-align: center;
-        margin: 5px;
-    }
-    
-    .home-badge {
-        background: linear-gradient(135deg, #667eea, #764ba2);
-        color: white;
-    }
-    
-    .draw-badge {
-        background: linear-gradient(135deg, #f093fb, #f5576c);
-        color: white;
-    }
-    
-    .away-badge {
-        background: linear-gradient(135deg, #4facfe, #00f2fe);
-        color: white;
-    }
-    
-    /* Progress bar */
-    .prob-bar {
-        height: 8px;
-        border-radius: 4px;
-        background: #e0e0e0;
-        margin: 10px 0;
-    }
-    
-    .prob-fill {
-        height: 100%;
-        border-radius: 4px;
-        transition: width 0.3s ease;
-    }
-    
-    /* Header styling */
-    h1, h2, h3 {
-        color: white !important;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
-    }
-    
-    /* Sidebar styling */
-    .css-1d391kg {
-        background: rgba(0,0,0,0.1) !important;
-    }
+    .stApp { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+    .match-card { background: rgba(255,255,255,0.95); border-radius: 15px; padding: 20px; margin-bottom: 20px; box-shadow: 0 8px 32px rgba(0,0,0,0.1); transition: transform 0.3s; }
+    .match-card:hover { transform: translateY(-5px); }
+    .prediction-badge { display: inline-block; padding: 8px 16px; border-radius: 25px; font-weight: bold; margin: 5px; }
+    .home-badge { background: linear-gradient(135deg, #667eea, #764ba2); color: white; }
+    .draw-badge { background: linear-gradient(135deg, #f093fb, #f5576c); color: white; }
+    .away-badge { background: linear-gradient(135deg, #4facfe, #00f2fe); color: white; }
+    h1, h2, h3 { color: white !important; text-shadow: 2px 2px 4px rgba(0,0,0,0.2); }
 </style>
 """, unsafe_allow_html=True)
 
 # Initialize session state
 if 'model' not in st.session_state:
-    st.session_state.model = None
-if 'fixtures' not in st.session_state:
-    st.session_state.fixtures = []
+    st.session_state.model = FootballPredictor()
+    if not st.session_state.model.load():
+        st.session_state.model.train()
+        st.session_state.model.save()
 
-# Import our modules
-from collector import FootballDataCollector
-from model import FootballPredictor
-
-# Header
+# Title
 col1, col2, col3 = st.columns([1,2,1])
 with col2:
     st.title("⚽ Football Predictor Pro")
-    st.markdown("<p style='text-align: center; color: white;'>Advanced AI-Powered Football Predictions</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: white;'>AI-powered predictions using XGBoost</p>", unsafe_allow_html=True)
 
-# Sidebar
+# Sidebar controls
 with st.sidebar:
     st.markdown("## 🔧 Controls")
-    
-    # Data source selection
-    data_source = st.selectbox(
-        "Data Source",
-        ["Flashscore.com", "Football-Data.org", "Sportmonks"]
-    )
-    
-    # Days ahead
-    days_ahead = st.slider("Days ahead", 1, 30, 7)
-    
-    # League selection
-    leagues = [
-        "Premier League", "La Liga", "Bundesliga", "Serie A", "Ligue 1",
-        "Champions League", "Europa League", "All Leagues"
-    ]
-    selected_league = st.selectbox("League", leagues)
-    
-    # Auto-refresh
-    auto_refresh = st.checkbox("Auto-refresh every 60 seconds", value=False)
-    
+    view_mode = st.radio("View Mode", ["Recent Matches", "Upcoming Matches (manual input)", "Add New Fixture"])
+    days = st.slider("Days range", 1, 60, 7)
     st.markdown("---")
-    st.markdown("### 📊 Model Info")
-    st.info("XGBoost classifier trained on historical match data (55-65% accuracy)")
-    
+    st.markdown("### 📊 Model Status")
+    if st.session_state.model.model:
+        st.success(f"Model loaded (accuracy: {st.session_state.model.accuracy:.1%})")
+    else:
+        st.warning("Model not trained. Add results to train.")
     st.markdown("---")
     st.markdown("### 🔗 Data Sources")
-    st.caption("• Flashscore.com (live fixtures)")
-    st.caption("• Football-Data.org API (free tier)")
-    st.caption("• Sportmonks API (free tier)")
+    st.caption("• API-Football (historical)")
+    st.caption("• Manual fixture input")
 
-# Fetch fixtures button
-if st.button("🔄 Fetch Upcoming Fixtures", use_container_width=True):
-    with st.spinner("Fetching fixtures from Flashscore..."):
-        collector = FootballDataCollector()
-        
-        if data_source == "Flashscore.com":
-            fixtures = asyncio.run(collector.get_upcoming_fixtures(days_ahead=days_ahead))
-        elif data_source == "Football-Data.org":
-            # You'll need to get a free API key from football-data.org
-            api_key = st.secrets.get("FOOTBALL_DATA_API_KEY", "")
-            fixtures = collector.get_fixtures_from_football_data(api_key, days_ahead=days_ahead)
-        else:
-            # Sportmonks - free tier available
-            api_key = st.secrets.get("SPORTMONKS_API_KEY", "")
-            fixtures = collector.get_fixtures_from_sportmonks(api_key)
-        
-        if fixtures:
-            st.session_state.fixtures = fixtures
-            st.success(f"✅ Found {len(fixtures)} upcoming fixtures!")
-        else:
-            st.warning("No fixtures found. Try another data source or adjust days ahead.")
+# Helper to load fixtures
+def load_fixtures_from_db(mode="recent", league_id=None, days=7):
+    collector = FootballDataCollector()
+    if mode == "recent":
+        with get_connection() as conn:
+            df = pd.read_sql("""
+                SELECT f.date, h.name AS home, a.name AS away, p.predicted_winner, p.win_probability
+                FROM fixtures f
+                JOIN teams h ON f.home_team_id = h.id
+                JOIN teams a ON f.away_team_id = a.id
+                LEFT JOIN predictions p ON f.id = p.fixture_id
+                WHERE f.date > NOW() - INTERVAL '%s days' AND f.date <= NOW()
+                ORDER BY f.date DESC
+            """, conn, params=(days,))
+            return df.to_dict('records')
+    else:
+        # upcoming matches from database (if any)
+        with get_connection() as conn:
+            df = pd.read_sql("""
+                SELECT f.date, h.name AS home, a.name AS away, p.predicted_winner, p.win_probability
+                FROM fixtures f
+                JOIN teams h ON f.home_team_id = h.id
+                JOIN teams a ON f.away_team_id = a.id
+                LEFT JOIN predictions p ON f.id = p.fixture_id
+                WHERE f.date > NOW()
+                ORDER BY f.date ASC
+                LIMIT 20
+            """, conn)
+            return df.to_dict('records')
 
-# Display fixtures and predictions
-if st.session_state.fixtures:
+# Main content
+if view_mode == "Add New Fixture":
     st.markdown("---")
-    st.markdown("## 📅 Upcoming Fixtures")
+    st.markdown("## ➕ Add a Custom Fixture")
+    with st.form("new_fixture"):
+        col1, col2 = st.columns(2)
+        with col1:
+            home_team = st.text_input("Home Team")
+        with col2:
+            away_team = st.text_input("Away Team")
+        match_date = st.date_input("Match Date", datetime.now())
+        if st.form_submit_button("Add Fixture (for prediction only)"):
+            # Store in session state as temporary fixture list
+            if 'temp_fixtures' not in st.session_state:
+                st.session_state.temp_fixtures = []
+            st.session_state.temp_fixtures.append({
+                'home': home_team,
+                'away': away_team,
+                'date': match_date,
+                'api_prob': 0.5  # default
+            })
+            st.success("Fixture added! Go to 'Upcoming Matches' view.")
     
-    # Load or train model
-    if st.session_state.model is None:
-        st.session_state.model = FootballPredictor()
-        # For now, we'll use sample predictions
-        # In production, train on historical data first
+    # Display temp fixtures
+    if st.session_state.get('temp_fixtures'):
+        st.markdown("### 📋 Custom Fixtures")
+        for fix in st.session_state.temp_fixtures:
+            st.write(f"{fix['date']} - {fix['home']} vs {fix['away']}")
+
+elif view_mode == "Recent Matches":
+    fixtures = load_fixtures_from_db(mode="recent", days=days)
+    if not fixtures:
+        st.warning("No recent matches found.")
+    else:
+        st.markdown(f"## 📅 Recent Matches (last {days} days)")
+        cols = st.columns(2)
+        for idx, match in enumerate(fixtures):
+            with cols[idx % 2]:
+                with st.container():
+                    st.markdown(f"""
+                    <div class="match-card">
+                        <h3 style="color: #333;">{match['home']} vs {match['away']}</h3>
+                        <p style="color: #666;">📅 {match['date'].strftime('%Y-%m-%d %H:%M')}</p>
+                    """, unsafe_allow_html=True)
+                    if match['predicted_winner'] and match['win_probability']:
+                        prob = match['win_probability'] * 100
+                        st.markdown(f"**API Prediction:** {match['predicted_winner']} ({prob:.0f}%)")
+                    else:
+                        st.markdown("*No API prediction available*")
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+else:  # Upcoming matches (manual + any future db fixtures)
+    st.markdown("## 🔮 Upcoming Match Predictions")
+    # Combine DB fixtures (future) and temp fixtures
+    db_fixtures = load_fixtures_from_db(mode="upcoming", days=days)
+    temp_fixtures = st.session_state.get('temp_fixtures', [])
+    all_fixtures = db_fixtures + temp_fixtures
     
-    # Display each fixture in a card
-    cols = st.columns(2)
-    for idx, match in enumerate(st.session_state.fixtures):
-        with cols[idx % 2]:
-            with st.container():
-                st.markdown(f"""
-                <div class="match-card">
-                    <h3 style="color: #333;">{match['home_team']} vs {match['away_team']}</h3>
-                    <p style="color: #666;">🏆 {match['league']} | 📅 {match['date'][:10] if 'date' in match else datetime.now().strftime('%Y-%m-%d')}</p>
-                """, unsafe_allow_html=True)
-                
-                # Generate predictions
-                prob = st.session_state.model.predict_match(
-                    match['home_team'], 
-                    match['away_team'],
-                    pd.DataFrame()  # Empty DataFrame for now - need historical data
-                )
-                
-                # Display probabilities
-                st.markdown("#### 📊 Prediction Probabilities")
-                
-                # Home win
-                st.markdown(f"**🏠 {match['home_team']}**")
-                st.progress(prob['home'] / 100, text=f"{prob['home']}%")
-                
-                # Draw
-                st.markdown(f"**🤝 Draw**")
-                st.progress(prob['draw'] / 100, text=f"{prob['draw']}%")
-                
-                # Away win
-                st.markdown(f"**✈️ {match['away_team']}**")
-                st.progress(prob['away'] / 100, text=f"{prob['away']}%")
-                
-                # Prediction summary
-                max_prob = max(prob, key=prob.get)
-                if max_prob == 'home':
-                    prediction = f"🏠 {match['home_team']}"
-                elif max_prob == 'draw':
-                    prediction = "🤝 Draw"
-                else:
-                    prediction = f"✈️ {match['away_team']}"
-                
-                st.markdown(f"""
-                <div class="prediction-badge {'home-badge' if max_prob == 'home' else 'draw-badge' if max_prob == 'draw' else 'away-badge'}">
-                    🎯 Prediction: {prediction} ({prob[max_prob]}%)
-                </div>
-                """, unsafe_allow_html=True)
-                
-                st.markdown("</div>", unsafe_allow_html=True)
-
-# Statistics section
-st.markdown("---")
-st.markdown("## 📈 Model Performance")
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.metric("Accuracy", "60%", "+2.5%", help="Model accuracy on test data")
-
-with col2:
-    st.metric("Matches Analyzed", "10,000+", "Historical dataset")
-
-with col3:
-    st.metric("Leagues Covered", "Top 5 European", "+ Champions League")
-
-# Visit our demo
-st.markdown("---")
-st.markdown("""
-<div style="text-align: center; color: white;">
-    <p>Powered by XGBoost | Data from Flashscore.com, Football-Data.org, Sportmonks</p>
-    <p style="font-size: 12px;">⚠️ For research purposes only. Not gambling advice.</p>
-</div>
-""", unsafe_allow_html=True)
+    if not all_fixtures:
+        st.info("No upcoming fixtures. Use 'Add New Fixture' to create one.")
+    else:
+        cols = st.columns(2)
+        for idx, match in enumerate(all_fixtures):
+            with cols[idx % 2]:
+                with st.container():
+                    api_prob = match.get('win_probability', 0.5) if isinstance(match, dict) else 0.5
+                    if isinstance(api_prob, float) and api_prob > 1:
+                        api_prob = api_prob / 100
+                    pred = st.session_state.model.predict(api_prob)
+                    max_key = max(pred, key=pred.get)
+                    badge_class = "home-badge" if max_key == 'home' else ("draw-badge" if max_key == 'draw' else "away-badge")
+                    
+                    st.markdown(f"""
+                    <div class="match-card">
+                        <h3 style="color: #333;">{match['home']} vs {match['away']}</h3>
+                        <p style="color: #666;">📅 {match['date'] if 'date' in match else 'TBD'}</p>
+                        <div class="prob-bar"><div class="prob-fill" style="width: {pred['home']}%; background: #667eea;"></div></div>
+                        <p><strong>🏠 Home win:</strong> {pred['home']:.1f}%</p>
+                        <div class="prob-bar"><div class="prob-fill" style="width: {pred['draw']}%; background: #f093fb;"></div></div>
+                        <p><strong>🤝 Draw:</strong> {pred['draw']:.1f}%</p>
+                        <div class="prob-bar"><div class="prob-fill" style="width: {pred['away']}%; background: #4facfe;"></div></div>
+                        <p><strong>✈️ Away win:</strong> {pred['away']:.1f}%</p>
+                        <div class="prediction-badge {badge_class}">🎯 Prediction: {max_key.title()} ({pred[max_key]:.1f}%)</div>
+                    </div>
+                    """, unsafe_allow_html=True)
