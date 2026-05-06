@@ -1,4 +1,4 @@
-# app.py - Professional Betting Intelligence Dashboard
+# app.py - Professional Betting Intelligence Dashboard (Recent + Upcoming)
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -102,38 +102,99 @@ def load_leagues():
             return [{"id": row["league_id"], "season": row["season"]} for row in rows]
 
 @st.cache_data(ttl=60)
-def load_upcoming_fixtures(league_id=None, days_ahead=14):
-    """Load upcoming fixtures with predictions and odds."""
+def load_fixtures(league_id=None, days_ahead=14, days_back=7, mode="upcoming"):
+    """
+    Load fixtures based on mode:
+    - 'upcoming': future matches within days_ahead
+    - 'recent': past matches within days_back
+    - 'both': combines both (but we'll handle separately)
+    """
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
-                query = """
-                    SELECT 
-                        f.id,
-                        f.date,
-                        h.name AS home,
-                        a.name AS away,
-                        p.predicted_winner,
-                        p.win_probability,
-                        p.advice,
-                        o.bookmaker,
-                        o.home_odds,
-                        o.draw_odds,
-                        o.away_odds
-                    FROM fixtures f
-                    JOIN teams h ON f.home_team_id = h.id
-                    JOIN teams a ON f.away_team_id = a.id
-                    LEFT JOIN predictions p ON f.id = p.fixture_id
-                    LEFT JOIN odds o ON f.id = o.fixture_id
-                    WHERE f.date > NOW()
-                      AND f.date < NOW() + INTERVAL '%s days'
-                """
-                params = [days_ahead]
+                if mode == "upcoming":
+                    query = """
+                        SELECT 
+                            f.id,
+                            f.date,
+                            h.name AS home,
+                            a.name AS away,
+                            p.predicted_winner,
+                            p.win_probability,
+                            p.advice,
+                            o.bookmaker,
+                            o.home_odds,
+                            o.draw_odds,
+                            o.away_odds
+                        FROM fixtures f
+                        JOIN teams h ON f.home_team_id = h.id
+                        JOIN teams a ON f.away_team_id = a.id
+                        LEFT JOIN predictions p ON f.id = p.fixture_id
+                        LEFT JOIN odds o ON f.id = o.fixture_id
+                        WHERE f.date > NOW()
+                          AND f.date < NOW() + INTERVAL '%s days'
+                    """
+                    params = [days_ahead]
+                else:  # recent
+                    query = """
+                        SELECT 
+                            f.id,
+                            f.date,
+                            h.name AS home,
+                            a.name AS away,
+                            p.predicted_winner,
+                            p.win_probability,
+                            p.advice,
+                            o.bookmaker,
+                            o.home_odds,
+                            o.draw_odds,
+                            o.away_odds
+                        FROM fixtures f
+                        JOIN teams h ON f.home_team_id = h.id
+                        JOIN teams a ON f.away_team_id = a.id
+                        LEFT JOIN predictions p ON f.id = p.fixture_id
+                        LEFT JOIN odds o ON f.id = o.fixture_id
+                        WHERE f.date > NOW() - INTERVAL '%s days'
+                          AND f.date <= NOW()
+                        ORDER BY f.date DESC
+                    """
+                    params = [days_back]
+
                 if league_id:
-                    query += " AND f.league_id = %s"
-                    params.append(league_id)
-                query += " ORDER BY f.date ASC"
-                cur.execute(query, params)
+                    if mode == "upcoming":
+                        query += " AND f.league_id = %s"
+                    else:
+                        # For recent, add to WHERE clause (note: there's already a WHERE)
+                        query = query.replace("WHERE", f"WHERE f.league_id = %s AND ")
+                        params.insert(0, league_id)  # careful: adjust ordering
+                        # Actually easier: rebuild for recent with league filter
+                        # I'll restructure below for clarity
+                        query = """
+                            SELECT 
+                                f.id,
+                                f.date,
+                                h.name AS home,
+                                a.name AS away,
+                                p.predicted_winner,
+                                p.win_probability,
+                                p.advice,
+                                o.bookmaker,
+                                o.home_odds,
+                                o.draw_odds,
+                                o.away_odds
+                            FROM fixtures f
+                            JOIN teams h ON f.home_team_id = h.id
+                            JOIN teams a ON f.away_team_id = a.id
+                            LEFT JOIN predictions p ON f.id = p.fixture_id
+                            LEFT JOIN odds o ON f.id = o.fixture_id
+                            WHERE f.league_id = %s
+                              AND f.date > NOW() - INTERVAL '%s days'
+                              AND f.date <= NOW()
+                            ORDER BY f.date DESC
+                        """
+                        params = [league_id, days_back]
+
+                cur.execute(query, tuple(params))
                 rows = cur.fetchall()
                 return rows
     except Exception as e:
@@ -158,19 +219,37 @@ st.sidebar.title("Controls")
 
 leagues = load_leagues()
 league_options = {f"{row['id']}_{row['season']}": f"League {row['id']} ({row['season']})" for row in leagues}
+if not league_options:
+    st.error("No leagues found in database. Please run data import first.")
+    st.stop()
+
 selected_league_key = st.sidebar.selectbox("Select League", options=list(league_options.keys()), format_func=lambda x: league_options[x])
 selected_league_id = int(selected_league_key.split("_")[0])
-days_ahead = st.sidebar.slider("Days ahead", 1, 60, 7)
+
+# Toggle between upcoming and recent
+view_mode = st.sidebar.radio("View Mode", ["Upcoming Matches", "Recent Matches"], index=0)
+
+if view_mode == "Upcoming Matches":
+    days_ahead = st.sidebar.slider("Days ahead", 1, 60, 7)
+    days_back = None
+else:
+    days_back = st.sidebar.slider("Days past", 1, 60, 7)
+    days_ahead = None
+
 show_value_only = st.sidebar.checkbox("🔍 Show only value bets", value=False)
 st.sidebar.markdown("---")
 st.sidebar.info("Data refreshes every 60 seconds. Predictions from API‑Football.")
 
 # ---------- Load Data ----------
+mode = "upcoming" if view_mode == "Upcoming Matches" else "recent"
 with st.spinner("Loading matches..."):
-    fixtures = load_upcoming_fixtures(league_id=selected_league_id, days_ahead=days_ahead)
+    if mode == "upcoming":
+        fixtures = load_fixtures(league_id=selected_league_id, days_ahead=days_ahead, mode="upcoming")
+    else:
+        fixtures = load_fixtures(league_id=selected_league_id, days_back=days_back, mode="recent")
 
 if not fixtures:
-    st.warning("No upcoming fixtures found for this league. Try increasing days ahead or check data import.")
+    st.warning(f"No {view_mode.lower()} found for this league. Try adjusting the time range or import more data.")
     st.stop()
 
 # ---------- Process Data ----------
@@ -189,7 +268,7 @@ if show_value_only:
 # ---------- Metrics ----------
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.markdown(f'<div class="metric-card"><div class="metric-value">{len(df)}</div><div class="metric-label">Upcoming Matches</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="metric-card"><div class="metric-value">{len(df)}</div><div class="metric-label">{view_mode[:10]}</div></div>', unsafe_allow_html=True)
 with col2:
     pred_count = df['predicted_winner'].notna().sum()
     st.markdown(f'<div class="metric-card"><div class="metric-value">{pred_count}</div><div class="metric-label">With Predictions</div></div>', unsafe_allow_html=True)
@@ -201,10 +280,9 @@ with col4:
     st.markdown(f'<div class="metric-card"><div class="metric-value">{avg_conf:.0f}%</div><div class="metric-label">Avg Confidence</div></div>', unsafe_allow_html=True)
 
 # ---------- Tabs ----------
-tab1, tab2, tab3 = st.tabs(["📋 Upcoming Matches", "🎯 Value Bets", "📊 Statistics"])
+tab1, tab2, tab3 = st.tabs(["📋 Matches", "🎯 Value Bets", "📊 Statistics"])
 
 with tab1:
-    # Prepare display table
     display_df = df[['date', 'home', 'away', 'predicted_winner', 'win_probability', 'advice', 'value_bet']].copy()
     display_df['date'] = display_df['date'].dt.strftime('%Y-%m-%d %H:%M')
     display_df['win_probability'] = display_df['win_probability'].apply(lambda x: f"{x:.0f}%" if pd.notna(x) else "N/A")
@@ -225,7 +303,6 @@ with tab2:
         st.dataframe(val_display, use_container_width=True)
 
 with tab3:
-    # Confidence histogram
     fig1 = px.histogram(df[df['win_probability'].notna()], x='win_probability', nbins=20,
                         title="Prediction Confidence Distribution",
                         labels={'win_probability': 'Confidence (%)'},
@@ -233,7 +310,6 @@ with tab3:
     fig1.update_layout(bargap=0.1, plot_bgcolor='white', title_font_size=16)
     st.plotly_chart(fig1, use_container_width=True)
 
-    # Value bet chart (if any)
     if val_count > 0:
         fig2 = px.bar(val_df, x='home', y='ev', title="Expected Value per Match",
                       labels={'ev': 'Expected Value (%)', 'home': 'Home Team'},
