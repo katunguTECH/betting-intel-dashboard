@@ -1,1 +1,1 @@
-api_prob,home_form,away_form,home_gf_avg,home_ga_avg,away_gf_avg,away_ga_avg,h2h_home_win_rate,h2h_away_win_rate,h2h_draw_rate
+api_prob,home_elo,away_elo,elo_diff,days_since_home_norm,days_since_away_norm,tournament_weight
