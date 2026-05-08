@@ -7,7 +7,6 @@ import urllib.parse
 
 load_dotenv()
 
-# Debug: print which variables are set
 print("=== db_helper.py debug ===")
 print("DATABASE_URL present:", bool(os.getenv("DATABASE_URL")))
 print("DB_HOST present:", bool(os.getenv("DB_HOST")))
