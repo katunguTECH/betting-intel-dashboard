@@ -5,6 +5,7 @@ from datetime import datetime
 from db_helper import get_connection
 import os
 
+# --- Streamlit Page Config ---
 st.set_page_config(
     page_title="World Cup Predictor Pro 2026",
     page_icon="🏆",
@@ -12,7 +13,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS
+# --- Custom CSS ---
 st.markdown("""
 <style>
     .stApp { background: linear-gradient(135deg, #0a0a2a 0%, #1a1a3e 100%); }
@@ -46,7 +47,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Team ELO ratings (base - will be adjusted by recent results)
+# --- Team ELO Ratings ---
 TEAM_ELO = {
     "Argentina": 1980, "France": 1960, "Brazil": 1970, "England": 1930, "Belgium": 1870,
     "Croatia": 1860, "Netherlands": 1900, "Portugal": 1890, "Italy": 1880, "Spain": 1950,
@@ -86,7 +87,7 @@ def update_elo_from_results():
                         else:
                             TEAM_ELO[home] += 5
                             TEAM_ELO[away] += 5
-    except:
+    except Exception as e:
         pass
 
 update_elo_from_results()
@@ -112,7 +113,7 @@ def get_team_stats(team):
                         'avg_scored': row['avg_first_goal_scored'] or 35,
                         'avg_conceded': row['avg_first_goal_conceded'] or 35
                     }
-    except:
+    except Exception as e:
         pass
     return {'form': 0.5, 'fifa': 100, 'gd': 0, 'avg_scored': 35, 'avg_conceded': 35}
 
@@ -144,7 +145,7 @@ def predict_match_enhanced(home, away):
                     ORDER BY f.date DESC LIMIT 1
                 """, (away, away))
                 recent_away = cur.fetchone()
-    except:
+    except Exception as e:
         recent_home = None
         recent_away = None
     
@@ -224,7 +225,7 @@ def calculate_goal_rush_probabilities(home, away):
                 row = cur.fetchone()
                 if row and row['avg_minute']:
                     away_avg_timing = float(row['avg_minute'])
-    except:
+    except Exception as e:
         pass
     
     avg_timing = (home_avg_timing + away_avg_timing) / 2
@@ -297,7 +298,7 @@ def calculate_goal_rush_probabilities(home, away):
     
     return periods, most_likely, predicted_minute, minute_range
 
-# ALL UPCOMING WORLD CUP 2026 MATCHES (Knockout Stage - Hardcoded)
+# --- ALL UPCOMING WORLD CUP 2026 MATCHES (Knockout Stage - Hardcoded) ---
 matches = [
     # Sunday, June 28
     {"date": "2026-06-28", "time": "19:00 GMT", "home": "South Africa", "away": "Canada", "venue": "SoFi Stadium, Los Angeles, USA", "stage": "Round of 16"},
@@ -328,10 +329,10 @@ matches = [
     {"date": "2026-07-03", "time": "01:30 GMT", "home": "Colombia", "away": "Ghana", "venue": "GEHA Field at Arrowhead, Kansas City, USA", "stage": "Round of 16"},
 ]
 
-# Header
+# --- Dashboard Header ---
 st.markdown('<div class="main-header"><h1>🏆 World Cup Predictor Pro 2026</h1><p>Knockout Stage Predictions | AI-powered with 63+ live matches trained</p></div>', unsafe_allow_html=True)
 
-# Stats row
+# --- Stats Row ---
 total_matches = len(matches)
 unique_teams = len(set([m['home'] for m in matches] + [m['away'] for m in matches]))
 
@@ -343,7 +344,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# Group matches by date
+# --- Group matches by date ---
 matches_by_date = {}
 for match in matches:
     date = match['date']
@@ -366,6 +367,7 @@ for date in sorted(matches_by_date.keys()):
             
             gr_probs, gr_most_likely, gr_minute, gr_range = calculate_goal_rush_probabilities(match['home'], match['away'])
             
+            # --- Build Goal Rush HTML ---
             gr_html = f'''
             <div style="margin-top: 15px;">
                 <div class="goal-rush-card" style="margin-top: 0;">
@@ -382,6 +384,7 @@ for date in sorted(matches_by_date.keys()):
             gr_html += f'<div style="margin-top: 8px;">🎯 Most likely: <strong>{gr_most_likely}</strong> ({gr_probs[gr_most_likely]*100:.1f}%)</div>'
             gr_html += '</div></div></div>'
             
+            # --- Build Match Card ---
             card_html = f"""
             <div class="match-card">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
@@ -414,6 +417,7 @@ for date in sorted(matches_by_date.keys()):
             """
             st.markdown(card_html, unsafe_allow_html=True)
 
+# --- Footer ---
 st.markdown("""
 <div class="footer">
     🤖 Model trained on 63+ live World Cup matches + 49,000+ historical matches<br>
